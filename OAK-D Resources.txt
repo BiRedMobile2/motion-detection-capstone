@@ -1,0 +1,12 @@
+OAK-D Resources from Luxonis website
+
+API Resources
+--->Installation: https://docs.luxonis.com/projects/api/en/latest/install/
+Code Samples: https://docs.luxonis.com/projects/api/en/latest/tutorials/code_samples/
+Tutorial: https://docs.luxonis.com/projects/api/en/latest/tutorials/hello_world/
+API Reference: https://docs.luxonis.com/projects/api/en/latest/references/python/
+
+SDK Resources
+DepthAI SDK: https://docs.luxonis.com/projects/sdk/en/latest/
+Getting Started: https://docs.luxonis.com/projects/sdk/en/latest/getting-started/
+DepthAI SDK API: https://docs.luxonis.com/projects/sdk/en/latest/api/#
