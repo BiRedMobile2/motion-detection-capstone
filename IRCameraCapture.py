@@ -2,7 +2,13 @@
 # Adapted from Carlos' code
 # Scott N. 9/26/2022
 #
-
+# Burst capture with a patient-motion gate added. The live feed behaves as
+# before; CapturePosition() and CaptureClosure() are new.
+#
+# All SDK access stays on this QThread. A capture is queued with a flag the run
+# loop picks up, rather than called straight through from the GUI thread - two
+# threads calling GetTemperatureImage() at once would hand back overlapping
+# views of the same SDK buffer.
 
 import os
 import threading
@@ -17,14 +23,24 @@ from  PySide6.QtGui import QImage, QPixmap
 
 import motion_detection as md
 
-# Frames per burst and how long to spread them over. About a second is short
-# enough that skin temperature barely drifts inside the burst, and long enough
-# to span part of a breathing cycle.
+# Frames per burst and how long to spread them over.
+#
+# A second, measured. A shorter window does give the patient less time to drift
+# inside one burst, but it shrinks real movement by exactly the same mechanism,
+# and movement is what we are trying to see. Worst-5% IoU on a run with
+# deliberate small shoulder shifts:
+#
+#   0.25s  0.944      0.5s  0.848      1.0s  0.712      2.0s  0.633
+#
+# Against a breathing volunteer's 0.987 at the same window, 1 second separates
+# movement from breathing about twice as well as half a second does. 2 seconds
+# separates better still, but leaves more of the burst exposed to drift for a
+# gain that is already past the threshold.
 BURST_FRAMES = 5
 BURST_SECONDS = 1.0
 
 # Seconds to wait after the rig moves, before capturing, so gantry vibration
-# dies down.
+# dies down. PLACEHOLDER - measure this on the real rig.
 SETTLE_SECONDS = 0.5
 
 MAX_RETRIES = 3
@@ -43,7 +59,10 @@ class IRCameraCapture(QWidget):
         self.irCameraWorker.start()
         self.irCameraWorker.ImageUpdate.connect(self.ImageUpdateSlot)
 
-        
+        # Default handlers, so a capture reports something out of the box.
+        # Qt allows several listeners per signal, so connect your own alongside
+        # these rather than replacing them:
+        #   capture.irCameraWorker.BurstFinished.connect(self.my_handler)
         self.irCameraWorker.BurstFinished.connect(self.on_burst)
         self.irCameraWorker.ClosureFinished.connect(self.on_closure)
         self.irCameraWorker.OperatorAlert.connect(self.on_alert)
@@ -52,6 +71,7 @@ class IRCameraCapture(QWidget):
     def ImageUpdateSlot(self, Image):
         self.irCameralbl.setPixmap(QPixmap.fromImage(Image))
 
+    # -- default signal handlers; print only, override or add your own -----
 
     def on_burst(self, position, result, keeper, frames):
         print(f"position {position}: {result.summary()}  "
@@ -79,6 +99,7 @@ class IRCameraCapture(QWidget):
     def checkirCameraAttached(self):
         print("checkirCameraAttached")
 
+    # -- motion-gated capture, forwarded to the worker --------------------
 
     def CapturePosition(self, position):
         """Queue a gated burst at `position`. Returns immediately.
@@ -139,8 +160,13 @@ class irCameraReader(QThread):
         self._lock = threading.Lock()
 
     def MakeTempArray(self, h, w, Ptr):
-        """Temperatures in degrees C as an (h, w) array, one value per pixel."""
-        # copy(): as_array points at the SDK's buffer, which the next grab overwrites
+        """Temperatures in degrees C as an (h, w) array, one value per pixel.
+
+        as_array points at the SDK's own buffer, which the next grab
+        overwrites, so the copy is required for any frame that outlives
+        this call. Without it, every frame in a burst aliases the same
+        memory and the motion check compares a frame against itself.
+        """
         return np.ctypeslib.as_array(Ptr, shape=(h, w)).copy()
 
     def ReadTemperatureFrame(self):
@@ -204,6 +230,7 @@ class irCameraReader(QThread):
             else:
                 print("NULL!!")
 
+    # -- the motion gate ---------------------------------------------------
 
     def CapturePosition(self, position):
         """Queue a gated burst. Safe to call from the GUI thread."""
@@ -385,11 +412,12 @@ class irCameraReader(QThread):
                 handle.write("{position},{attempt},{iou:.4f},"
                              "{shift_px:.3f},{passed}\n".format(**row))
 
-
+    # -- housekeeping ------------------------------------------------------
 
     def PauseFeed(self, state):
         self.feedNoShow = state
 
+    # Old spelling, kept so existing callers keep working.
     pauseFeed = PauseFeed
 
     def SaveImages(self, imageFolder, irName, arrayName):

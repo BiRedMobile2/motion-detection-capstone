@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+motion_figs/
+runs/
+look_*.jpg
+smoke_frame.npy
+smoke_frame.jpg

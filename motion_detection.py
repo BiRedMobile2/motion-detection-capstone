@@ -5,9 +5,11 @@
 #   outline overlap  how much the two body outlines agree, 0 to 1
 #   pixel shift      how far the image slid, in pixels
 #
-# Neither number is thrown off by the skin slowly warming or cooling.
+# Neither number is thrown off by the skin slowly warming or cooling, which is
+# what makes this harder than it first looks.
 #
-# Only ever compare frames from the SAME camera angle. 
+# Only ever compare frames from the SAME camera angle. Across angles, the rig's
+# own rotation reads as patient movement.
 #
 # No camera, no Qt, no SDK - just numpy and OpenCV, so it runs anywhere and can
 # be tested without hardware.
@@ -17,21 +19,48 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-# Provisional thresholds. These are NOT calibrated yet - they need a run with a
-# volunteer holding still, then moving deliberately, to set properly.
+# Calibrated 2026-10-08 against the camera, five 60-second runs with a
+# volunteer. Figures are the worst case over a 1-second burst window:
 #
-# For reference, measured on the IR_Test sample frames:
-#   still pair (IR_Test / IR_Test4):  IoU 0.855, shift 0.21 px
-#   moved pair (IR_Test2 / IR_Test3): IoU 0.343, shift 206.1 px
+#              IoU median   IoU worst   shift worst
+#   still            0.996       0.987       0.77 px
+#   breathing        0.994       0.981       1.16 px
+#   small moves      0.993       0.735    (unusable, see below)
+#   large moves      0.992       0.372    (unusable, see below)
 #
+# IoU does the real work. Still and breathing never fell below 0.981 across
+# 5000+ pairs; movement reached 0.372. MIN_IOU sits in the gap.
+MIN_IOU = 0.97
 
-MIN_IOU = 0.80
-MAX_SHIFT_PX = 5.0
+# Secondary. Phase correlation measures how far the WHOLE SCENE translated, and
+# most of the scene is stationary room and rig, so a patient turning in place
+# barely registers - large moves scored IoU 0.42 while reporting half a pixel.
+# When it does break down it returns nonsense (1622 px on a 640x512 image).
+# Small moves did produce honest 2-3 px translations, which is what this cut is
+# for; it is not a substitute for the IoU check.
+MAX_SHIFT_PX = 2.0
 
-
+# Tells "didn't move" apart from "couldn't tell". A blank or blown-out frame
+# gives phaseCorrelate nothing to lock onto, and the shift it returns is often
+# near zero - which would otherwise look like a perfectly still patient and
+# pass. Below this confidence, the shift is rejected instead of believed.
+#
+# Measured across four runs. The response is NOT bounded to 0-1:
+#
+#   still        never below 1.03
+#   breathing    worst 0.42
+#   movement     worst -0.04, with 5-16 pairs per run under this cut
+#
+# A negative response means no correlation peak was found at all. 0.01 sits in
+# the dead zone between breathing and outright failure, so the guard fires only
+# when the measurement has collapsed - never on a patient who merely moved.
 MIN_CONFIDENCE = 0.01
 
-# Skin runs ~30-35 C against a room at ~20-24 C.
+# Skin runs ~30-35 C against a room at ~20-24 C, so 28 sits between them.
+#
+# Unused by default. The camera on the bench reports raw counts (~3000-3900),
+# not degrees, so body_mask falls back to Otsu. Pass skin_temp_c=SKIN_TEMP_C
+# explicitly once the frames really are Celsius.
 SKIN_TEMP_C = 28.0
 
 
@@ -42,7 +71,9 @@ class Thresholds:
     min_iou: float = MIN_IOU
     max_shift_px: float = MAX_SHIFT_PX
     min_confidence: float = MIN_CONFIDENCE
-    # How many consecutive failing pairs before the burst is rejected.
+    # How many consecutive failing pairs before the burst is rejected. Breathing
+    # moves the chest wall slightly and periodically; requiring two in a row
+    # stops one noisy frame from throwing the capture away.
     consecutive_failures: int = 2
 
 
@@ -86,7 +117,11 @@ class BurstResult:
 
 
 def to_uint8(frame: np.ndarray) -> np.ndarray:
-    """Per-frame min-max stretch to 8-bit."""
+    """Per-frame min-max stretch to 8-bit.
+
+    Stretching each frame on its own is deliberate: it removes the slow warming
+    and cooling of the skin over a session, so drift cannot look like motion.
+    """
     if frame.dtype == np.uint8:
         return frame
     return cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
@@ -105,7 +140,7 @@ def body_mask(frame: np.ndarray, skin_temp_c: float = None) -> np.ndarray:
         blurred = cv2.GaussianBlur(to_uint8(frame), (5, 5), 0)
         _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-    # Drop noise without eating the real outline.
+    # Drop speckle without eating the real outline.
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
@@ -135,7 +170,7 @@ def pixel_shift(a: np.ndarray, b: np.ndarray):
     return dx, dy, float(np.hypot(dx, dy)), float(confidence)
 
 
-def compare(reference, frame, index=1, thresholds=None, skin_temp_c=SKIN_TEMP_C):
+def compare(reference, frame, index=1, thresholds=None, skin_temp_c=None):
     """Run both checks on one pair of frames from the same camera position."""
     thresholds = thresholds or Thresholds()
 
@@ -153,7 +188,7 @@ def compare(reference, frame, index=1, thresholds=None, skin_temp_c=SKIN_TEMP_C)
     return PairResult(index, iou, dx, dy, shift, confidence, not reasons, reasons)
 
 
-def check_burst(frames, thresholds=None, skin_temp_c=SKIN_TEMP_C) -> BurstResult:
+def check_burst(frames, thresholds=None, skin_temp_c=None) -> BurstResult:
     """Decide whether a burst from one camera position is usable.
 
     frames  list of 2+ frames captured back to back at ONE position, oldest
@@ -192,7 +227,7 @@ def check_burst(frames, thresholds=None, skin_temp_c=SKIN_TEMP_C) -> BurstResult
 
 
 def check_closure(first_capture, closing_capture, thresholds=None,
-                  skin_temp_c=SKIN_TEMP_C) -> PairResult:
+                  skin_temp_c=None) -> PairResult:
     """End-of-session check: did the patient shift BETWEEN positions?
 
     The per-position checks never compare one angle to another, so they cannot
