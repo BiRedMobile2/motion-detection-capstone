@@ -41,7 +41,7 @@ BURST_SECONDS = 1.0
 
 # Seconds to wait after the rig moves, before capturing, so gantry vibration
 # dies down. PLACEHOLDER - measure this on the real rig.
-SETTLE_SECONDS = 0.5
+SETTLE_SECONDS = 2.0
 
 MAX_RETRIES = 3
 
