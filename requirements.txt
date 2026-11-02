@@ -1,0 +1,6 @@
+depthai==2.33.0.0  # code uses v2 API (XLinkOut); v3 removed it
+opencv-python==5.0.0.93
+numpy==2.5.3
+PySide6==6.11.2
+torch==2.11.0  # CUDA build: pip install torch --index-url https://download.pytorch.org/whl/cu128
+kornia==0.8.3
