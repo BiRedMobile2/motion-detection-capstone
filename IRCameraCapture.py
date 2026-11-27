@@ -3,7 +3,7 @@
 # Scott N. 9/26/2022
 #
 # Burst capture with a patient-motion gate added. The live feed behaves as
-# before; CapturePosition() and CaptureClosure() are new.
+# before; CapturePosition() is new.
 #
 # All SDK access stays on this QThread. A capture is queued with a flag the run
 # loop picks up, rather than called straight through from the GUI thread - two
@@ -64,7 +64,6 @@ class IRCameraCapture(QWidget):
         # these rather than replacing them:
         #   capture.irCameraWorker.BurstFinished.connect(self.my_handler)
         self.irCameraWorker.BurstFinished.connect(self.on_burst)
-        self.irCameraWorker.ClosureFinished.connect(self.on_closure)
         self.irCameraWorker.OperatorAlert.connect(self.on_alert)
         self.irCameraWorker.RecordingStopped.connect(self.on_recording_stopped)
 
@@ -76,10 +75,6 @@ class IRCameraCapture(QWidget):
     def on_burst(self, position, result, keeper, frames):
         print(f"position {position}: {result.summary()}  "
               f"({len(frames)} frames, kept #{result.keeper})")
-
-    def on_closure(self, pair):
-        verdict = "pass" if pair.passed else "FAIL"
-        print(f"closure check: IoU {pair.iou:.3f}, shift {pair.shift_px:.2f} px, {verdict}")
 
     def on_alert(self, position, reason):
         print(f"OPERATOR ALERT - position {position}: {reason}")
@@ -109,10 +104,6 @@ class IRCameraCapture(QWidget):
         """
         self.irCameraWorker.CapturePosition(position)
 
-    def CaptureClosure(self):
-        """Queue the end-of-session check. Returns immediately."""
-        self.irCameraWorker.CaptureClosure()
-
     def SaveLog(self, path):
         self.irCameraWorker.SaveLog(path)
 
@@ -135,7 +126,6 @@ class IRCameraCapture(QWidget):
 class irCameraReader(QThread):
     ImageUpdate = Signal(QImage)
     BurstFinished = Signal(int, object, object, object)  # position, BurstResult, kept frame, all frames
-    ClosureFinished = Signal(object)              # PairResult
     OperatorAlert = Signal(int, str)              # position, why it gave up
     RecordingProgress = Signal(int, object)       # frames saved, PairResult vs the one before (or None)
     RecordingStopped = Signal(int, str)           # frames saved, folder
@@ -151,7 +141,6 @@ class irCameraReader(QThread):
         self.feedNoShow = False
         self.Temperatures = None    # latest frame, for SaveImages
         self.ir_img = None          # latest display image, for SaveImages
-        self.first_capture = None   # reference for the end-of-session check
         self.log = []               # one row per attempt, for threshold tuning
         self.last_burst = []        # every frame of the most recent burst, kept or not
         self.recording_log = []     # one row per recorded frame pair
@@ -206,8 +195,6 @@ class irCameraReader(QThread):
                 kind, arg = pending
                 if kind == "position":
                     self._run_position(arg)
-                elif kind == "closure":
-                    self._run_closure()
                 continue
 
             frame = self.ReadTemperatureFrame()
@@ -236,11 +223,6 @@ class irCameraReader(QThread):
         """Queue a gated burst. Safe to call from the GUI thread."""
         with self._lock:
             self._pending = ("position", position)
-
-    def CaptureClosure(self):
-        """Queue the end-of-session check. Safe to call from the GUI thread."""
-        with self._lock:
-            self._pending = ("closure", None)
 
     def GrabBurst(self, count=BURST_FRAMES, seconds=BURST_SECONDS):
         """Capture `count` frames spread over `seconds`, oldest first.
@@ -288,8 +270,6 @@ class irCameraReader(QThread):
 
             if result.passed:
                 keeper = frames[result.keeper]
-                if self.first_capture is None:
-                    self.first_capture = keeper
                 self.BurstFinished.emit(position, result, keeper, frames)
                 return
 
@@ -299,26 +279,6 @@ class irCameraReader(QThread):
         if result is not None and result.reasons:
             reason = result.reasons[0]
         self.OperatorAlert.emit(position, f"{retries} attempts failed - {reason}")
-
-    def _run_closure(self, settle=SETTLE_SECONDS):
-        """End-of-session check. Queue it after rotating back to the first angle.
-
-        Catches the patient resettling BETWEEN positions, which the per-position
-        checks cannot see. Assumes the rig returns to the same spot repeatably -
-        verify that with an empty rig first.
-        """
-        if self.first_capture is None:
-            self.OperatorAlert.emit(-1, "no first capture to compare against")
-            return
-
-        time.sleep(settle)
-        frames = self.GrabBurst()
-        if not frames:
-            self.OperatorAlert.emit(-1, "no frames from the camera")
-            return
-
-        self.ClosureFinished.emit(
-            md.check_closure(self.first_capture, frames[0], self.thresholds))
 
     def SaveBurst(self, folder, prefix="burst"):
         """Write every frame of the most recent burst, not just the keeper.

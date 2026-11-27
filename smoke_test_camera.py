@@ -14,8 +14,9 @@ import time
 import cv2
 import numpy as np
 
+import motion_detection as md
+
 THIS_DIR = os.path.abspath(os.path.dirname(__file__))
-SKIN_TEMP_C = 28.0          # the value motion_detection.py assumes
 BURST_FRAMES = 5
 BURST_SECONDS = 1.0
 
@@ -78,17 +79,22 @@ def run_checks(dll):
     if 10 < frame.min() < 40 and 20 < frame.max() < 50:
         print("  -> looks like degrees C")
     else:
-        print("  -> NOT the range we expected for degrees C. SKIN_TEMP_C will")
-        print("     be wrong, and body_mask needs the Otsu path instead.")
+        print("  -> raw counts, not degrees. That is expected; body_mask")
+        print("     picks its cut with Otsu and does not need absolute units.")
 
-    # ---- 2. does the 28 C cut separate anything ---------------------------
-    print(f"\n2. the {SKIN_TEMP_C} C threshold")
-    above = float((frame >= SKIN_TEMP_C).mean())
-    print(f"  {above * 100:.1f}% of pixels are at or above {SKIN_TEMP_C} C")
-    if above < 0.02:
-        print("  -> almost nothing is warm. Stand in frame, or the cut is too high.")
-    elif above > 0.90:
-        print("  -> almost everything is warm. The cut is too low for this scene.")
+    # ---- 2. does Otsu separate anything -----------------------------------
+    print("\n2. what the body mask picks up")
+    mask = md.body_mask(frame)
+    room = float(np.median(frame[~mask]))
+    subject = float(np.median(frame[mask]))
+    print(f"  coverage   {mask.mean() * 100:.1f}% of the frame")
+    print(f"  contrast   {subject - room:.0f} counts over the room")
+    if mask.mean() < 0.02:
+        print("  -> almost nothing is warm. Stand in frame.")
+    elif mask.mean() > 0.90:
+        print("  -> almost everything is warm. Something large and warm is in shot.")
+    elif subject - room < 150:
+        print("  -> under ~150 counts the mask stops tracking the subject.")
     else:
         print("  -> plausible: part body, part background.")
 

@@ -56,14 +56,6 @@ MAX_SHIFT_PX = 2.0
 # when the measurement has collapsed - never on a patient who merely moved.
 MIN_CONFIDENCE = 0.01
 
-# Skin runs ~30-35 C against a room at ~20-24 C, so 28 sits between them.
-#
-# Unused by default. The camera on the bench reports raw counts (~3000-3900),
-# not degrees, so body_mask falls back to Otsu. Pass skin_temp_c=SKIN_TEMP_C
-# explicitly once the frames really are Celsius.
-SKIN_TEMP_C = 28.0
-
-
 @dataclass
 class Thresholds:
     """Limits a burst must satisfy to be kept."""
@@ -127,23 +119,42 @@ def to_uint8(frame: np.ndarray) -> np.ndarray:
     return cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX, cv2.CV_8U)
 
 
-def body_mask(frame: np.ndarray, skin_temp_c: float = None) -> np.ndarray:
+def body_mask(frame: np.ndarray) -> np.ndarray:
     """Boolean mask of the warm body against the cooler room.
 
-    frame        temperature array in degrees C, or an 8-bit display image
-    skin_temp_c  absolute cut in degrees C. Pass None (or hand in an 8-bit
-                 frame) to let Otsu pick the cut from the histogram instead.
+    frame  temperature array, raw counts, or an 8-bit display image. The cut is
+           chosen by Otsu from the frame's own histogram, so the absolute units
+           do not matter.
+
+    The subject needs roughly 150 counts of contrast over the room for this to
+    isolate it. Measured on the bench 2026-11-25: clean at 163 counts, broken
+    at 130, where the cut falls far enough that background joins the mask.
     """
-    if skin_temp_c is not None and frame.dtype != np.uint8:
-        mask = (frame >= skin_temp_c).astype(np.uint8) * 255
-    else:
-        blurred = cv2.GaussianBlur(to_uint8(frame), (5, 5), 0)
-        _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    blurred = cv2.GaussianBlur(to_uint8(frame), (5, 5), 0)
+    _, mask = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
     # Drop speckle without eating the real outline.
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # Keep only the largest warm region.
+    #
+    # Otsu splits the histogram in two and everything on the warm side becomes
+    # "body", so a heated platform, a lamp, or a hand reaching in all join the
+    # mask. None of them move when the patient does, so they hold the overlap
+    # up and make real motion read as smaller than it is.
+    #
+    # Measured on the bench 2026-11-09: a warm turntable deck contributed up to
+    # 9% of the mask and swung by 3200 px across one 28-minute run, producing
+    # eight rejections that were entirely the platform. With the deck excluded,
+    # the subject's own overlap held between 0.976 and 0.994 with no trend.
+    #
+    # On a frame with one warm region this is a no-op.
+    count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, 8)
+    if count > 2:                       # background, plus more than one region
+        largest = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        mask = np.where(labels == largest, 255, 0).astype(np.uint8)
     return mask > 0
 
 
@@ -170,11 +181,11 @@ def pixel_shift(a: np.ndarray, b: np.ndarray):
     return dx, dy, float(np.hypot(dx, dy)), float(confidence)
 
 
-def compare(reference, frame, index=1, thresholds=None, skin_temp_c=None):
+def compare(reference, frame, index=1, thresholds=None):
     """Run both checks on one pair of frames from the same camera position."""
     thresholds = thresholds or Thresholds()
 
-    iou = mask_iou(body_mask(reference, skin_temp_c), body_mask(frame, skin_temp_c))
+    iou = mask_iou(body_mask(reference), body_mask(frame))
     dx, dy, shift, confidence = pixel_shift(reference, frame)
 
     reasons = []
@@ -188,7 +199,7 @@ def compare(reference, frame, index=1, thresholds=None, skin_temp_c=None):
     return PairResult(index, iou, dx, dy, shift, confidence, not reasons, reasons)
 
 
-def check_burst(frames, thresholds=None, skin_temp_c=None) -> BurstResult:
+def check_burst(frames, thresholds=None) -> BurstResult:
     """Decide whether a burst from one camera position is usable.
 
     frames  list of 2+ frames captured back to back at ONE position, oldest
@@ -205,7 +216,7 @@ def check_burst(frames, thresholds=None, skin_temp_c=None) -> BurstResult:
 
     reference = frames[0]
     pairs = [
-        compare(reference, frame, i, thresholds, skin_temp_c)
+        compare(reference, frame, i, thresholds)
         for i, frame in enumerate(frames[1:], start=1)
     ]
 
@@ -224,18 +235,3 @@ def check_burst(frames, thresholds=None, skin_temp_c=None) -> BurstResult:
     # Clean burst. The frames are aligned, so the middle one is as good as any
     # and sits furthest from any settling wobble at the edges of the window.
     return BurstResult(True, pairs, len(frames) // 2, [])
-
-
-def check_closure(first_capture, closing_capture, thresholds=None,
-                  skin_temp_c=None) -> PairResult:
-    """End-of-session check: did the patient shift BETWEEN positions?
-
-    The per-position checks never compare one angle to another, so they cannot
-    see someone resettling between stops. Returning the rig to its first angle
-    and re-shooting gives a matching viewpoint to compare against the very first
-    capture of the session.
-
-    This assumes the rig returns to the same position repeatably. Measure that
-    with an empty rig before trusting the result.
-    """
-    return compare(first_capture, closing_capture, -1, thresholds, skin_temp_c)

@@ -1,0 +1,29 @@
+# Install with:  python -m pip install -r requirements.txt
+#
+# Use a python.org Python, not the MSYS2 one. PyPI publishes no wheels for
+# MSYS2's interpreter, so pip falls back to building numpy from source and
+# fails looking for ninja and cmake.
+#
+#   python -c "import sys; print(sys.executable)"
+#
+# should NOT print a path under msys64.
+
+# The bench tools: grab.py, fill.py, warmup.py, motion_detection.py
+numpy
+opencv-python
+
+# The Qt GUI: IRCameraCapture.py
+PySide6
+
+# The OAK-D visible camera only, not needed for the motion gate
+# depthai
+
+# NOT INSTALLABLE HERE, but required beside the .py files for any script that
+# opens the camera:
+#
+#   icisdk_x64.dll        in this repo
+#   opencv_core440.dll    NOT in this repo - copy it from the ICI SDK install
+#
+# grab.py, smoke_test_camera.py, calibrate.py and IRCameraCapture.py all load
+# opencv_core440.dll before icisdk_x64.dll, with no error handling. A fresh
+# clone will not have it.

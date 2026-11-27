@@ -99,15 +99,15 @@ def run(image_dir, out_dir):
         frame_a, frame_b = load_frames(image_dir, file_a, file_b)
 
         # The gate runs on a burst; two saved frames stand in for one here.
-        burst = md.check_burst([frame_a, frame_b], thresholds, skin_temp_c=None)
+        burst = md.check_burst([frame_a, frame_b], thresholds)
         pair = burst.pairs[0]
 
         verdict = "PASS - keep frame" if burst.passed else "FAIL - " + burst.reasons[0]
         print(f"{label:<7} {pair.iou:>7.3f} {pair.shift_px:>9.2f} "
               f"{pair.dx:>8.2f} {pair.dy:>8.2f}  {verdict}")
 
-        mask_a = md.body_mask(frame_a, skin_temp_c=None)
-        mask_b = md.body_mask(frame_b, skin_temp_c=None)
+        mask_a = md.body_mask(frame_a)
+        mask_b = md.body_mask(frame_b)
         path = os.path.join(out_dir, f"overlay_{label}.png")
         cv2.imwrite(path, overlay(mask_a, mask_b,
                                   os.path.splitext(file_a)[0],
@@ -127,15 +127,10 @@ def run(image_dir, out_dir):
     for px in (0, 2, 5, 10, 20, 40):
         matrix = np.float32([[1, 0, px], [0, 1, 0]])
         slid = cv2.warpAffine(base, matrix, (w, h), borderMode=cv2.BORDER_REPLICATE)
-        pair = md.compare(base, slid, thresholds=thresholds, skin_temp_c=None)
+        pair = md.compare(base, slid, thresholds=thresholds)
         print(f"{px:>5} px {pair.iou:>8.3f} {pair.shift_px:>7.2f} px "
               f"{abs(pair.shift_px - px):>5.2f} px  {'pass' if pair.passed else 'FAIL'}")
 
-    # End-of-session closure check, standing in the first frame for both ends.
-    closure = md.check_closure(base, base, thresholds, skin_temp_c=None)
-    print(f"\nclosure check (same frame both ends, sanity only): "
-          f"IoU {closure.iou:.3f}, shift {closure.shift_px:.2f} px, "
-          f"{'pass' if closure.passed else 'FAIL'}")
     print(f"\nfigures written to {out_dir}/\n")
 
 

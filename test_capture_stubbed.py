@@ -169,12 +169,6 @@ def test_every_burst_frame_is_handed_back():
     assert len(r.last_burst) == 3
 
 
-def test_first_capture_is_stashed_for_closure():
-    r = still_reader()
-    capture_at(r)
-    assert r.first_capture is not None
-
-
 def test_moving_burst_retries_then_alerts():
     r = moving_reader()
     capture_at(r)
@@ -200,24 +194,6 @@ def test_dead_camera_alerts_instead_of_hanging():
     assert len(r.OperatorAlert.calls) == 1
 
 
-# -- the closure check -------------------------------------------------------
-
-
-def test_closure_without_a_reference_alerts():
-    r = still_reader()
-    r._run_closure(settle=0.0)
-    assert len(r.OperatorAlert.calls) == 1
-    assert len(r.ClosureFinished.calls) == 0
-
-
-def test_closure_after_a_capture_reports():
-    r = still_reader()
-    capture_at(r)
-    r.GrabBurst = lambda **k: ic.irCameraReader.GrabBurst(r, **BURST)
-    r._run_closure(settle=0.0)
-    assert len(r.ClosureFinished.calls) == 1
-
-
 # -- the queue ---------------------------------------------------------------
 
 
@@ -226,13 +202,6 @@ def test_capture_position_queues_work():
     r.CapturePosition(7)
     with r._lock:
         assert r._pending == ("position", 7)
-
-
-def test_capture_closure_queues_work():
-    r = still_reader()
-    r.CaptureClosure()
-    with r._lock:
-        assert r._pending == ("closure", None)
 
 
 # -- saving ------------------------------------------------------------------

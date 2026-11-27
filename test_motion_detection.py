@@ -66,19 +66,36 @@ def test_uniform_warming_is_not_motion():
     assert result.passed, "temperature drift was mistaken for motion"
 
 
-def test_absolute_skin_threshold_matches_otsu_on_clean_frames():
-    frame = synthetic_frame()
-    absolute = md.body_mask(frame, skin_temp_c=28.0)
-    otsu = md.body_mask(frame, skin_temp_c=None)
-    assert md.mask_iou(absolute, otsu) > 0.95
-
-
 def test_transient_bad_frame_does_not_sink_the_burst():
     """One shutter-event frame in the middle should be tolerated."""
     frame = synthetic_frame()
     burst = [frame, frame.copy(), slide(frame, 80), frame.copy(), frame.copy()]
     assert md.check_burst(burst).passed
 
+
+
+def test_a_second_warm_object_is_kept_out_of_the_mask():
+    """A warm platform or lamp in frame must not join the body mask.
+
+    Otsu splits the histogram in two, so without a largest-region filter every
+    warm thing counts as body. Measured on the bench 2026-11-09: a heated
+    turntable deck reached 9% of the mask and caused eight rejections on a
+    subject that never moved.
+    """
+    frame = synthetic_frame()
+    frame[440:470, 100:540] = 31.0          # a warm strip below the subject
+    mask = md.body_mask(frame)
+    assert mask[240, 320], "the subject itself was dropped"
+    assert not mask[455, 320], "the warm strip joined the mask"
+
+
+def test_a_stationary_warm_object_does_not_mask_real_motion():
+    """The strip must not hold the overlap up when the subject moves."""
+    frame = synthetic_frame()
+    frame[440:470, 100:540] = 31.0
+    moved = slide(synthetic_frame(cx=360), 0)
+    moved[440:470, 100:540] = 31.0          # the strip stays put
+    assert md.mask_iou(md.body_mask(frame), md.body_mask(moved)) < md.MIN_IOU
 
 if __name__ == "__main__":
     failures = 0
